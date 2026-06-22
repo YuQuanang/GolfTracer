@@ -1,58 +1,49 @@
 import React from 'react';
 import { Routes, Route } from 'react-router-dom';
-import { ThemeProvider, createTheme } from '@mui/material/styles';
-import CssBaseline from '@mui/material/CssBaseline';
+import { Toaster } from 'react-hot-toast';
 
-// Components
 import Header from './components/layout/Header';
 import Footer from './components/layout/Footer';
+import PaywallModal from './components/PaywallModal';
 
-// Pages
 import HomePage from './pages/HomePage';
 import TracerPage from './pages/TracerPage';
 import AboutPage from './pages/AboutPage';
-
-const theme = createTheme({
-  palette: {
-    primary: {
-      main: '#4CAF50',
-    },
-    secondary: {
-      main: '#2196F3',
-    },
-    background: {
-      default: '#f5f5f5',
-    },
-  },
-  typography: {
-    fontFamily: '"Roboto", "Helvetica", "Arial", sans-serif',
-    h1: {
-      fontSize: '2.5rem',
-      fontWeight: 500,
-    },
-    h2: {
-      fontSize: '2rem',
-      fontWeight: 500,
-    },
-  },
-});
+import PricingPage from './pages/PricingPage';
 
 function App() {
   return (
-    <ThemeProvider theme={theme}>
-      <CssBaseline />
+    <>
       <div className="app">
         <Header />
-        <main className="container">
+        <main style={{ flex: 1 }}>
           <Routes>
-            <Route path="/" element={<HomePage />} />
-            <Route path="/tracer" element={<TracerPage />} />
-            <Route path="/about" element={<AboutPage />} />
+            <Route path="/"        element={<HomePage />} />
+            <Route path="/tracer"  element={<TracerPage />} />
+            <Route path="/about"   element={<AboutPage />} />
+            <Route path="/pricing" element={<PricingPage />} />
           </Routes>
         </main>
         <Footer />
+        <PaywallModal />
       </div>
-    </ThemeProvider>
+      <Toaster
+        position="bottom-right"
+        toastOptions={{
+          style: {
+            background: '#181818',
+            color: '#F2EDE5',
+            border: '1px solid #2E2E2E',
+            fontFamily: "'Plus Jakarta Sans', sans-serif",
+            fontSize: '0.875rem',
+            borderRadius: '10px',
+          },
+          success: {
+            iconTheme: { primary: '#BF9B6F', secondary: '#0A0A0A' },
+          },
+        }}
+      />
+    </>
   );
 }
 

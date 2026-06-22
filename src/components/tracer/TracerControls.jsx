@@ -1,118 +1,164 @@
 import React from 'react';
-import { Box, Typography, Paper, Grid, Slider, FormControl, InputLabel, Select, MenuItem } from '@mui/material';
 import { HexColorPicker } from 'react-colorful';
 
-const TracerControls = ({ tracerSettings, onSettingChange }) => {
-  const handleColorChange = (color) => {
-    onSettingChange('color', color);
-  };
-  
-  const handleWidthChange = (event, newValue) => {
-    onSettingChange('width', newValue);
-  };
-  
-  const handleOpacityChange = (event, newValue) => {
-    onSettingChange('opacity', newValue);
-  };
-  
-  const handleStyleChange = (event) => {
-    onSettingChange('style', event.target.value);
-  };
-  
+function Label({ children }) {
   return (
-    <Box sx={{ mt: 4 }}>
-      <Paper elevation={2} sx={{ p: 3 }}>
-        <Typography variant="h6" gutterBottom>
-          Customize Tracer
-        </Typography>
-        
-        <Grid container spacing={4}>
-          <Grid item xs={12} md={6}>
-            <Typography gutterBottom>Color</Typography>
-            <Box sx={{ mb: 2 }}>
-              <HexColorPicker color={tracerSettings.color} onChange={handleColorChange} style={{ width: '100%' }} />
-            </Box>
-            
-            <Typography gutterBottom>Line Width: {tracerSettings.width}px</Typography>
-            <Slider
-              value={tracerSettings.width}
-              onChange={handleWidthChange}
-              min={1}
-              max={10}
-              step={1}
-              marks
-              valueLabelDisplay="auto"
-            />
-            
-            <Typography gutterBottom>Opacity: {Math.round(tracerSettings.opacity * 100)}%</Typography>
-            <Slider
-              value={tracerSettings.opacity}
-              onChange={handleOpacityChange}
-              min={0.1}
-              max={1}
-              step={0.1}
-              marks
-              valueLabelDisplay="auto"
-            />
-          </Grid>
-          
-          <Grid item xs={12} md={6}>
-            <FormControl fullWidth sx={{ mt: 2 }}>
-              <InputLabel id="tracer-style-label">Line Style</InputLabel>
-              <Select
-                labelId="tracer-style-label"
-                id="tracer-style"
-                value={tracerSettings.style}
-                label="Line Style"
-                onChange={handleStyleChange}
-              >
-                <MenuItem value="solid">Solid</MenuItem>
-                <MenuItem value="dashed">Dashed</MenuItem>
-                <MenuItem value="dotted">Dotted</MenuItem>
-              </Select>
-            </FormControl>
-            
-            <Box sx={{ mt: 4, p: 2, border: '1px solid #ddd', borderRadius: 1 }}>
-              <Typography variant="subtitle2" gutterBottom>
-                Preview
-              </Typography>
-              <Box
-                sx={{
-                  height: 4,
-                  width: '100%',
-                  backgroundColor: tracerSettings.color,
-                  opacity: tracerSettings.opacity,
-                  borderRadius: 1,
-                  my: 2,
-                  ...(tracerSettings.style === 'dashed' && {
-                    backgroundImage: `repeating-linear-gradient(to right, ${tracerSettings.color} 0, ${tracerSettings.color} 10px, transparent 10px, transparent 15px)`,
-                  }),
-                  ...(tracerSettings.style === 'dotted' && {
-                    backgroundImage: `repeating-linear-gradient(to right, ${tracerSettings.color} 0, ${tracerSettings.color} 5px, transparent 5px, transparent 10px)`,
-                  }),
-                }}
-              />
-              <Box
-                sx={{
-                  height: tracerSettings.width * 2,
-                  width: '100%',
-                  backgroundColor: tracerSettings.color,
-                  opacity: tracerSettings.opacity,
-                  borderRadius: tracerSettings.width,
-                  ...(tracerSettings.style === 'dashed' && {
-                    backgroundImage: `repeating-linear-gradient(to right, ${tracerSettings.color} 0, ${tracerSettings.color} 10px, transparent 10px, transparent 15px)`,
-                  }),
-                  ...(tracerSettings.style === 'dotted' && {
-                    backgroundImage: `repeating-linear-gradient(to right, ${tracerSettings.color} 0, ${tracerSettings.color} 5px, transparent 5px, transparent 10px)`,
-                  }),
-                }}
-              />
-            </Box>
-          </Grid>
-        </Grid>
-      </Paper>
-    </Box>
+    <p style={{
+      fontFamily: "'Space Grotesk', monospace",
+      fontSize: '0.65rem', fontWeight: 600,
+      letterSpacing: '0.14em', textTransform: 'uppercase',
+      color: 'var(--smoke)', marginBottom: '0.65rem',
+    }}>
+      {children}
+    </p>
   );
-};
+}
 
-export default TracerControls;
+function Divider() {
+  return <hr style={{ border: 'none', borderTop: '1px solid var(--ink-3)', margin: '1.5rem 0' }} />;
+}
+
+export default function TracerControls({ tracerSettings, onSettingChange }) {
+  const styles = ['solid', 'dashed', 'dotted'];
+
+  return (
+    <div style={{
+      padding: '1.5rem',
+      background: 'var(--ink-2)',
+      border: '1px solid var(--ink-4)',
+      borderRadius: 'var(--r-md)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 0,
+    }}>
+      <h3 style={{
+        fontFamily: "'Cormorant Garamond', serif",
+        fontSize: '1.1rem', fontWeight: 600, fontStyle: 'italic',
+        color: 'var(--cream)', marginBottom: '1.5rem',
+      }}>
+        Trace Style
+      </h3>
+
+      {/* Color */}
+      <Label>Color</Label>
+      <div style={{
+        '& .react-colorful': { width: '100%' },
+        marginBottom: '0.75rem',
+      }}>
+        <style>{`
+          .react-colorful { width: 100% !important; height: 140px; border-radius: 8px; overflow: hidden; }
+          .react-colorful__saturation { border-radius: 8px 8px 0 0; }
+          .react-colorful__hue { height: 10px; border-radius: 0 0 8px 8px; }
+          .react-colorful__pointer { width: 16px; height: 16px; border: 2px solid #fff; }
+        `}</style>
+        <HexColorPicker color={tracerSettings.color} onChange={v => onSettingChange('color', v)} />
+      </div>
+      {/* Hex swatch */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: '0.65rem',
+        padding: '0.65rem 0.75rem',
+        background: 'var(--ink-3)', borderRadius: 'var(--r-sm)',
+        border: '1px solid var(--ink-4)',
+      }}>
+        <div style={{
+          width: 20, height: 20, borderRadius: 4,
+          background: tracerSettings.color,
+          boxShadow: `0 0 8px ${tracerSettings.color}70`,
+          flexShrink: 0,
+          border: '1px solid rgba(255,255,255,0.1)',
+        }} />
+        <span style={{ fontFamily: "'Space Grotesk', monospace", fontSize: '0.82rem', color: 'var(--silver)', fontWeight: 600 }}>
+          {tracerSettings.color.toUpperCase()}
+        </span>
+      </div>
+
+      <Divider />
+
+      {/* Width */}
+      <Label>Line Width — {tracerSettings.width}px</Label>
+      <input
+        id="width-slider"
+        type="range" min={1} max={10} step={1}
+        value={tracerSettings.width}
+        onChange={e => onSettingChange('width', Number(e.target.value))}
+        style={{ width: '100%', accentColor: 'var(--bronze)', marginBottom: 0 }}
+      />
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.3rem', marginBottom: 0 }}>
+        <span style={{ fontFamily: "'Space Grotesk', monospace", fontSize: '0.6rem', color: 'var(--smoke)' }}>1</span>
+        <span style={{ fontFamily: "'Space Grotesk', monospace", fontSize: '0.6rem', color: 'var(--smoke)' }}>10</span>
+      </div>
+
+      <Divider />
+
+      {/* Opacity */}
+      <Label>Opacity — {Math.round(tracerSettings.opacity * 100)}%</Label>
+      <input
+        id="opacity-slider"
+        type="range" min={0.1} max={1} step={0.05}
+        value={tracerSettings.opacity}
+        onChange={e => onSettingChange('opacity', Number(e.target.value))}
+        style={{ width: '100%', accentColor: 'var(--bronze)' }}
+      />
+
+      <Divider />
+
+      {/* Style */}
+      <Label>Line Style</Label>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+        {styles.map(s => (
+          <button
+            key={s}
+            id={`style-${s}`}
+            onClick={() => onSettingChange('style', s)}
+            style={{
+              padding: '0.55rem 0.85rem',
+              borderRadius: 'var(--r-sm)',
+              background: tracerSettings.style === s ? 'rgba(191,155,111,0.1)' : 'var(--ink-3)',
+              border: `1px solid ${tracerSettings.style === s ? 'rgba(191,155,111,0.4)' : 'var(--ink-4)'}`,
+              cursor: 'pointer',
+              textAlign: 'left',
+              fontFamily: "'Space Grotesk', monospace",
+              fontSize: '0.75rem', fontWeight: tracerSettings.style === s ? 600 : 400,
+              color: tracerSettings.style === s ? 'var(--bronze)' : 'var(--ash)',
+              transition: 'all 200ms ease',
+              textTransform: 'capitalize',
+            }}
+          >
+            {s === 'solid' ? '— ' : s === 'dashed' ? '- - ' : '· · '}{s}
+          </button>
+        ))}
+      </div>
+
+      <Divider />
+
+      {/* Live preview */}
+      <Label>Preview</Label>
+      <div style={{
+        padding: '0.85rem 1rem',
+        background: 'var(--ink-3)',
+        borderRadius: 'var(--r-sm)',
+        border: '1px solid var(--ink-4)',
+        display: 'flex', alignItems: 'center',
+      }}>
+        <div style={{
+          height: Math.max(2, tracerSettings.width * 1.5),
+          flex: 1,
+          borderRadius: tracerSettings.width,
+          opacity: tracerSettings.opacity,
+          background: tracerSettings.style === 'solid'
+            ? tracerSettings.color
+            : undefined,
+          backgroundImage: tracerSettings.style === 'dashed'
+            ? `repeating-linear-gradient(90deg, ${tracerSettings.color} 0, ${tracerSettings.color} 10px, transparent 10px, transparent 18px)`
+            : tracerSettings.style === 'dotted'
+            ? `repeating-linear-gradient(90deg, ${tracerSettings.color} 0, ${tracerSettings.color} 4px, transparent 4px, transparent 10px)`
+            : undefined,
+          boxShadow: tracerSettings.style === 'solid'
+            ? `0 0 ${tracerSettings.width * 4}px ${tracerSettings.color}60`
+            : 'none',
+          transition: 'all 250ms ease',
+        }} />
+      </div>
+    </div>
+  );
+}

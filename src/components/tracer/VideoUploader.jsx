@@ -1,136 +1,112 @@
 import React, { useState, useRef } from 'react';
-import { Box, Typography, Button, Paper, Alert } from '@mui/material';
-import UploadFileIcon from '@mui/icons-material/UploadFile';
-import MovieIcon from '@mui/icons-material/Movie';
 
-const VideoUploader = ({ onFileUpload }) => {
-  const [dragActive, setDragActive] = useState(false);
+export default function VideoUploader({ onFileUpload }) {
+  const [drag, setDrag] = useState(false);
   const [error, setError] = useState('');
   const inputRef = useRef(null);
-  
-  // Handle file selection
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    validateAndUpload(file);
-  };
-  
-  // Handle drag events
-  const handleDrag = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    
-    if (e.type === 'dragenter' || e.type === 'dragover') {
-      setDragActive(true);
-    } else if (e.type === 'dragleave') {
-      setDragActive(false);
-    }
-  };
-  
-  // Handle drop event
-  const handleDrop = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      validateAndUpload(e.dataTransfer.files[0]);
-    }
-  };
-  
-  // Validate file and call onFileUpload
-  const validateAndUpload = (file) => {
+
+  const validate = (file) => {
     setError('');
-    
-    // Check if file exists
-    if (!file) {
-      setError('No file selected');
-      return;
-    }
-    
-    // Check file type
-    const validTypes = ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo'];
-    if (!validTypes.includes(file.type)) {
-      setError('Please select a valid video file (MP4, WebM, MOV, or AVI)');
-      return;
-    }
-    
-    // Check file size (limit to 100MB)
-    const maxSize = 100 * 1024 * 1024; // 100MB in bytes
-    if (file.size > maxSize) {
-      setError('File size exceeds 100MB limit');
-      return;
-    }
-    
-    // Call the onFileUpload callback
+    if (!file) { setError('No file selected.'); return; }
+    const ok = ['video/mp4', 'video/webm', 'video/quicktime', 'video/x-msvideo'].includes(file.type);
+    if (!ok) { setError('Supported formats: MP4, WebM, MOV, AVI.'); return; }
+    if (file.size > 100 * 1024 * 1024) { setError('File must be under 100 MB.'); return; }
     onFileUpload(file);
   };
-  
-  // Trigger file input click
-  const onButtonClick = () => {
-    inputRef.current.click();
+
+  const handleDrag = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    setDrag(e.type === 'dragenter' || e.type === 'dragover');
   };
-  
+
+  const handleDrop = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    setDrag(false);
+    if (e.dataTransfer.files?.[0]) validate(e.dataTransfer.files[0]);
+  };
+
   return (
-    <Box sx={{ mt: 4 }}>
-      <Paper
-        elevation={2}
-        sx={{
-          p: 4,
-          textAlign: 'center',
-          borderRadius: 2,
-          borderStyle: 'dashed',
-          borderWidth: 2,
-          borderColor: dragActive ? 'primary.main' : 'divider',
-          backgroundColor: dragActive ? 'rgba(76, 175, 80, 0.08)' : 'background.paper',
-          transition: 'all 0.3s ease',
-        }}
+    <div>
+      <div
+        id="upload-drop-zone"
         onDragEnter={handleDrag}
         onDragLeave={handleDrag}
         onDragOver={handleDrag}
         onDrop={handleDrop}
+        onClick={() => inputRef.current.click()}
+        style={{
+          padding: '3.5rem 2rem',
+          border: `1px dashed ${drag ? 'var(--bronze)' : 'var(--ink-5)'}`,
+          borderRadius: 'var(--r-lg)',
+          background: drag ? 'rgba(191,155,111,0.04)' : 'var(--ink-2)',
+          textAlign: 'center',
+          cursor: 'pointer',
+          transition: 'all 250ms ease',
+          position: 'relative',
+        }}
       >
-        <input
-          ref={inputRef}
-          type="file"
-          accept="video/*"
-          onChange={handleFileChange}
-          style={{ display: 'none' }}
-        />
-        
-        <MovieIcon sx={{ fontSize: 60, color: 'primary.main', mb: 2 }} />
-        
-        <Typography variant="h5" gutterBottom>
-          Upload Golf Swing Video
-        </Typography>
-        
-        <Typography variant="body1" color="text.secondary" paragraph>
-          Drag and drop your video file here, or click the button below to select a file.
-          For best results, use videos with good lighting and a clear view of the ball flight.
-        </Typography>
-        
-        <Button
-          variant="contained"
-          color="primary"
-          startIcon={<UploadFileIcon />}
-          onClick={onButtonClick}
-          size="large"
-          sx={{ mt: 2 }}
-        >
-          Select Video
-        </Button>
-        
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 2 }}>
-          Supported formats: MP4, WebM, MOV, AVI (Max size: 100MB)
-        </Typography>
-      </Paper>
-      
-      {error && (
-        <Alert severity="error" sx={{ mt: 2 }}>
-          {error}
-        </Alert>
-      )}
-    </Box>
-  );
-};
+        {/* Corner brackets */}
+        {[
+          { top: 14, left: 14, borderTop: '1px solid', borderLeft: '1px solid' },
+          { top: 14, right: 14, borderTop: '1px solid', borderRight: '1px solid' },
+          { bottom: 14, left: 14, borderBottom: '1px solid', borderLeft: '1px solid' },
+          { bottom: 14, right: 14, borderBottom: '1px solid', borderRight: '1px solid' },
+        ].map((s, i) => (
+          <div key={i} style={{ position: 'absolute', width: 16, height: 16, borderColor: drag ? 'var(--bronze)' : 'var(--ink-5)', transition: 'border-color 250ms', ...s }} />
+        ))}
 
-export default VideoUploader;
+        <input ref={inputRef} type="file" accept="video/*" onChange={e => validate(e.target.files[0])} style={{ display: 'none' }} id="file-input" />
+
+        {/* Icon */}
+        <div style={{
+          width: 56, height: 56,
+          borderRadius: 'var(--r-md)',
+          background: drag ? 'rgba(191,155,111,0.15)' : 'var(--ink-3)',
+          border: `1px solid ${drag ? 'rgba(191,155,111,0.4)' : 'var(--ink-4)'}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          margin: '0 auto 1.5rem',
+          fontSize: '1.5rem',
+          transition: 'all 250ms ease',
+        }}>
+          🎬
+        </div>
+
+        <h3 style={{
+          fontFamily: "'Cormorant Garamond', serif",
+          fontSize: '1.5rem', fontWeight: 600, fontStyle: 'italic',
+          color: 'var(--cream)', marginBottom: '0.5rem',
+        }}>
+          {drag ? 'Drop it here' : 'Upload your golf video'}
+        </h3>
+        <p style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: '0.85rem', color: 'var(--mist)', marginBottom: '1.75rem', lineHeight: 1.7, maxWidth: 380, margin: '0 auto 1.75rem' }}>
+          Drag & drop, or click to browse. Best results with stable camera, good lighting, and clear ball flight.
+        </p>
+
+        <button className="btn btn-outline" style={{ pointerEvents: 'none', fontSize: '0.85rem', padding: '0.6rem 1.5rem' }}>
+          Browse file
+        </button>
+
+        {/* Format list */}
+        <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', flexWrap: 'wrap', marginTop: '1.5rem' }}>
+          {['MP4', 'WebM', 'MOV', 'AVI'].map(f => (
+            <span key={f} className="tag tag-muted">{f}</span>
+          ))}
+          <span className="tag tag-muted">Max 100 MB</span>
+        </div>
+      </div>
+
+      {error && (
+        <div style={{
+          marginTop: '1rem', padding: '0.75rem 1rem',
+          background: 'rgba(160,55,42,0.1)',
+          border: '1px solid rgba(160,55,42,0.3)',
+          borderRadius: 'var(--r-sm)',
+          fontFamily: "'Plus Jakarta Sans', sans-serif",
+          fontSize: '0.83rem', color: '#C9897C',
+        }}>
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
