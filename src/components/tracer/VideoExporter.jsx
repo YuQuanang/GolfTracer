@@ -1,8 +1,31 @@
 import React, { useState, useEffect } from 'react';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import { simulateTrajectory, getTrajectoryPointAtTime, mapPhysicsTimeToScreenProgress } from '../../utils/golfPhysicsEngine.js';
 
-const VideoExporter = ({ videoFile, videoUrl, tracerPoints, tracerSettings }) => {
+const getVideoMetadata = (url) => {
+  return new Promise((resolve) => {
+    if (!url) {
+      resolve({ width: 1280, height: 720, duration: 5 });
+      return;
+    }
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    v.onloadedmetadata = () => {
+      resolve({
+        width: v.videoWidth || 1280,
+        height: v.videoHeight || 720,
+        duration: v.duration && isFinite(v.duration) && v.duration > 0 ? v.duration : 5
+      });
+    };
+    v.onerror = () => {
+      resolve({ width: 1280, height: 720, duration: 5 });
+    };
+    v.src = url;
+  });
+};
+
+const VideoExporter = ({ videoFile, videoUrl, curvePoints, tracerPoints, tracerSettings }) => {
   const [ffmpeg, setFfmpeg] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isReady, setIsReady] = useState(false);
@@ -16,13 +39,33 @@ const VideoExporter = ({ videoFile, videoUrl, tracerPoints, tracerSettings }) =>
       try {
         setIsLoading(true);
         const ffmpegInstance = new FFmpeg();
-        ffmpegInstance.on('progress', ({ progress }) => {
-          setProgress(Math.round(progress * 100));
+        ffmpegInstance.on('progress', ({ progress: p }) => {
+          // Map FFmpeg encoding progress to the remaining 45% -> 100%
+          setProgress((prev) => Math.max(prev, Math.min(100, 45 + Math.round(p * 55))));
         });
-        await ffmpegInstance.load({
-          coreURL: await toBlobURL('https://unpkg.com/@ffmpeg/core@0.12.2/dist/ffmpeg-core.js', 'application/javascript'),
-          wasmURL: await toBlobURL('https://unpkg.com/@ffmpeg/core@0.12.2/dist/ffmpeg-core.wasm', 'application/wasm'),
-        });
+        let loaded = false;
+        const cdns = [
+          'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm',
+          'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm'
+        ];
+        
+        for (const baseURL of cdns) {
+          try {
+            await ffmpegInstance.load({
+              coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'application/javascript'),
+              wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+            });
+            loaded = true;
+            break;
+          } catch (e) {
+            console.warn(`Failed loading FFmpeg core from ${baseURL}:`, e);
+          }
+        }
+
+        if (!loaded) {
+          throw new Error('Failed to load FFmpeg video processing engine from CDN due to network or CORS restrictions.');
+        }
+
         setFfmpeg(ffmpegInstance);
         setIsReady(true);
         setIsLoading(false);
@@ -33,57 +76,175 @@ const VideoExporter = ({ videoFile, videoUrl, tracerPoints, tracerSettings }) =>
     };
     load();
     return () => {
-      if (exportedUrl) URL.revokeObjectURL(exportedUrl);
+      if (exportedUrl) {
+        try { URL.revokeObjectURL(exportedUrl); } catch (_) {}
+      }
     };
   }, []);
 
   const exportVideo = async () => {
-    if (!ffmpeg || !videoFile || !tracerPoints) return;
+    if (!ffmpeg || !videoFile) return;
     try {
       setIsLoading(true);
       setProgress(0);
       setError('');
+
+      // 1. Get exact video dimensions and duration
+      const { width, height, duration } = await getVideoMetadata(videoUrl);
       await ffmpeg.writeFile('input.mp4', await fetchFile(videoFile));
-      const svgOverlay = generateSvgOverlay();
-      await ffmpeg.writeFile('overlay.svg', svgOverlay);
-      await ffmpeg.exec(['-i', 'input.mp4', '-hide_banner', '-loglevel', 'error']);
-      await ffmpeg.exec([
+
+      // 2. Setup physics trajectory simulation parameters
+      const clubKey = tracerSettings?.club || 'DRIVER';
+      const shapeKey = tracerSettings?.shotShape || 'STRAIGHT';
+      const speed = tracerSettings?.speed || 1;
+      const physicsTrajectory = simulateTrajectory(clubKey, shapeKey);
+      const T_max = physicsTrajectory[physicsTrajectory.length - 1]?.t || 1;
+
+      let maxZ = 0.01;
+      for (const p of physicsTrajectory) {
+        if (Math.abs(p.z) > maxZ) maxZ = Math.abs(p.z);
+      }
+
+      // Determine impact start time
+      const startTime = tracerSettings?.startTime !== undefined
+        ? tracerSettings.startTime
+        : (curvePoints?.start?.frame !== undefined ? curvePoints.start.frame / 30 : 0);
+
+      // 3. Setup reusable offscreen canvas for dynamic frame sequence generation
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+
+      const fps = 30; // standard smooth export frame rate
+      const totalFrames = Math.max(1, Math.ceil(duration * fps));
+      const generatedFileNames = [];
+
+      // Generate dynamic frame sequence matching exact kinematics
+      for (let f = 1; f <= totalFrames; f++) {
+        const curTime = (f - 1) / fps;
+        ctx.clearRect(0, 0, width, height);
+
+        if (curTime >= startTime) {
+          const elapsed = curTime - startTime;
+          const progressFraction = mapPhysicsTimeToScreenProgress(physicsTrajectory, elapsed * speed, clubKey);
+
+          if (progressFraction > 0) {
+            let pts = [];
+            if (curvePoints && curvePoints.start && curvePoints.apex && curvePoints.landing) {
+              const p0 = curvePoints.start;
+              const apex = curvePoints.apex;
+              const p2 = curvePoints.landing;
+
+              const p1 = {
+                x: 2 * apex.x - 0.5 * (p0.x + p2.x),
+                y: 2 * apex.y - 0.5 * (p0.y + p2.y),
+              };
+
+              const span = Math.hypot(p2.x - p0.x, p2.y - p0.y) || 300;
+              const maxLateralPx = Math.min(75, span * 0.22);
+
+              const steps = 150;
+              const maxStep = Math.floor(steps * progressFraction);
+
+              for (let i = 0; i <= maxStep; i++) {
+                const u = (i / steps);
+                const inv = 1 - u;
+                const bx = inv * inv * p0.x + 2 * inv * u * p1.x + u * u * p2.x;
+                const by = inv * inv * p0.y + 2 * inv * u * p1.y + u * u * p2.y;
+
+                let lateralOffset = 0;
+                if (maxZ > 0.5) {
+                  const pt = getTrajectoryPointAtTime(physicsTrajectory, u * T_max, 1.0);
+                  if (pt) {
+                    lateralOffset = (pt.z / maxZ) * maxLateralPx;
+                  }
+                }
+                pts.push({ x: bx + lateralOffset, y: by });
+              }
+            } else if (tracerPoints && tracerPoints.length > 1) {
+              const maxIdx = Math.max(1, Math.floor(tracerPoints.length * progressFraction));
+              pts = tracerPoints.slice(0, maxIdx + 1);
+            }
+
+            if (pts.length > 1) {
+              ctx.beginPath();
+              ctx.moveTo(pts[0].x, pts[0].y);
+              for (let i = 1; i < pts.length; i++) {
+                ctx.lineTo(pts[i].x, pts[i].y);
+              }
+
+              ctx.strokeStyle = tracerSettings?.color || '#BF9B6F';
+              ctx.lineWidth = tracerSettings?.width || 10;
+              ctx.globalAlpha = tracerSettings?.opacity ?? 0.85;
+              ctx.lineCap = 'round';
+              ctx.lineJoin = 'round';
+
+              if (tracerSettings?.style === 'dashed') {
+                ctx.setLineDash([ctx.lineWidth * 2.5, ctx.lineWidth * 1.5]);
+              } else if (tracerSettings?.style === 'dotted') {
+                ctx.setLineDash([ctx.lineWidth * 0.8, ctx.lineWidth * 1.5]);
+              } else {
+                ctx.setLineDash([]);
+              }
+              ctx.stroke();
+
+              // Draw glowing start anchor dot
+              ctx.globalAlpha = 1;
+              ctx.setLineDash([]);
+              ctx.fillStyle = tracerSettings?.color || '#BF9B6F';
+              ctx.beginPath();
+              ctx.arc(pts[0].x, pts[0].y, ctx.lineWidth * 0.8, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+        }
+
+        const blob = await new Promise((res) => canvas.toBlob(res, 'image/png'));
+        const frameName = `overlay_${String(f).padStart(4, '0')}.png`;
+        await ffmpeg.writeFile(frameName, await fetchFile(blob));
+        generatedFileNames.push(frameName);
+
+        // Update progress bar during frame rendering (0% -> 45%)
+        setProgress(Math.round((f / totalFrames) * 45));
+      }
+
+      // 4. Composite frame sequence over video stream at 60/30 FPS sync
+      const ret = await ffmpeg.exec([
         '-i', 'input.mp4',
-        '-i', 'overlay.svg',
-        '-filter_complex', '[0:v][1:v]overlay=0:0',
+        '-framerate', `${fps}`,
+        '-i', 'overlay_%04d.png',
+        '-filter_complex', '[0:v][1:v]overlay=0:0:shortest=1',
         '-c:a', 'copy',
         '-c:v', 'libx264',
-        '-preset', 'medium',
+        '-preset', 'ultrafast',
         '-crf', '23',
         'output.mp4'
       ]);
+
+      // Free up temporary frame memory inside FFmpeg WebAssembly virtual filesystem
+      for (const fname of generatedFileNames) {
+        try { await ffmpeg.deleteFile(fname); } catch (_) {}
+      }
+
+      if (ret !== 0 && ret !== undefined && ret !== null && typeof ret === 'number') {
+        throw new Error(`FFmpeg exited with error code ${ret}`);
+      }
+
       const data = await ffmpeg.readFile('output.mp4');
+      if (!data || data.length === 0) {
+        throw new Error('Video rendering completed but generated 0 bytes. Please verify input video format.');
+      }
+
       const blob = new Blob([data.buffer], { type: 'video/mp4' });
       const url = URL.createObjectURL(blob);
       setExportedUrl(url);
       setIsLoading(false);
     } catch (err) {
+      console.error('Export error:', err);
       setError(`Error exporting video: ${err.message}`);
       setIsLoading(false);
     }
-  };
-
-  const generateSvgOverlay = () => {
-    const width = 1280;
-    const height = 720;
-    let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">`;
-    if (tracerPoints && tracerPoints.length > 1) {
-      svg += `<path d="M ${tracerPoints[0].x} ${tracerPoints[0].y}`;
-      for (let i = 1; i < tracerPoints.length; i++) {
-        svg += ` L ${tracerPoints[i].x} ${tracerPoints[i].y}`;
-      }
-      svg += `" fill="none" stroke="${tracerSettings?.color || '#BF9B6F'}" stroke-width="${tracerSettings?.width || 10}" stroke-opacity="${tracerSettings?.opacity || 0.85}" `;
-      if (tracerSettings?.style === 'dashed') svg += `stroke-dasharray="12,8" `;
-      if (tracerSettings?.style === 'dotted') svg += `stroke-dasharray="4,6" `;
-      svg += `/>`;
-    }
-    svg += '</svg>';
-    return svg;
   };
 
   const downloadVideo = () => {
@@ -206,7 +367,10 @@ const VideoExporter = ({ videoFile, videoUrl, tracerPoints, tracerSettings }) =>
               <span>⬇</span> Download MP4 Video
             </button>
             <button
-              onClick={() => setExportedUrl('')}
+              onClick={() => {
+                if (exportedUrl) { try { URL.revokeObjectURL(exportedUrl); } catch (_) {} }
+                setExportedUrl('');
+              }}
               className="btn btn-outline"
               style={{ padding: '0.9rem', fontSize: '0.9rem' }}
             >

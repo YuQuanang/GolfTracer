@@ -226,12 +226,12 @@ export default function TracerControls({ tracerSettings, onSettingChange, videoR
                 flex: 1,
                 borderRadius: tracerSettings.width,
                 opacity: tracerSettings.opacity,
-                background: tracerSettings.style === 'solid' ? tracerSettings.color : undefined,
+                backgroundColor: tracerSettings.style === 'solid' ? tracerSettings.color : 'transparent',
                 backgroundImage: tracerSettings.style === 'dashed'
                   ? `repeating-linear-gradient(90deg, ${tracerSettings.color} 0, ${tracerSettings.color} 10px, transparent 10px, transparent 18px)`
                   : tracerSettings.style === 'dotted'
                   ? `repeating-linear-gradient(90deg, ${tracerSettings.color} 0, ${tracerSettings.color} 4px, transparent 4px, transparent 10px)`
-                  : undefined,
+                  : 'none',
                 boxShadow: tracerSettings.style === 'solid'
                   ? `0 0 ${tracerSettings.width * 3}px ${tracerSettings.color}70`
                   : 'none',

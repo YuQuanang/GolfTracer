@@ -403,7 +403,7 @@ export default function TracerPage() {
         );
 
       case 3:
-        return <VideoExporter videoFile={videoFile} videoUrl={videoUrl} tracerPoints={tracerPoints} tracerSettings={tracerSettings} />;
+        return <VideoExporter videoFile={videoFile} videoUrl={videoUrl} curvePoints={curvePoints} tracerPoints={tracerPoints} tracerSettings={tracerSettings} videoRef={videoRef} />;
 
       default:
         return null;
