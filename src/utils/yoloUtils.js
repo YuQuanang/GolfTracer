@@ -1,22 +1,13 @@
-import * as ort from 'onnxruntime-web';
+// ort is loaded as a classic <script> in index.html → available as window.ort
+const ort = window.ort;
 
-const MODEL_DIM = 640; // Standard YOLOv8 input dimension
+const MODEL_DIM = 640;
 
-/**
- * Loads the ONNX model using the WebAssembly execution provider.
- * @param {string} modelPath - Path to the .onnx file
- * @returns {Promise<ort.InferenceSession>}
- */
 export const loadModel = async (modelPath) => {
-  try {
-    // Use WASM backend for browser execution
-    ort.env.wasm.numThreads = 1;
-    const session = await ort.InferenceSession.create(modelPath, { executionProviders: ['wasm'] });
-    return session;
-  } catch (error) {
-    console.error("Failed to load ONNX model:", error);
-    throw error;
-  }
+  ort.env.wasm.wasmPaths = '/';
+  ort.env.wasm.numThreads = 1;
+  const session = await ort.InferenceSession.create(modelPath, { executionProviders: ['wasm'] });
+  return session;
 };
 
 /**
@@ -59,51 +50,44 @@ export const preprocess = (canvas, ctx, videoElement) => {
  */
 export const postprocess = (tensor, origW, origH) => {
   const data = tensor.data;
-  const numAnchors = 8400; // YOLOv8 standard 640x640 anchor count
-  const numClasses = 3; // From the Roboflow dataset (ball, club-head, fmo-ball)
-  
+  const numAnchors = 8400;
+  const numClasses = 3;
+
+  // Class IDs from the Roboflow training set
+  // 0 = ball (stationary on tee), 1 = club-head (excluded), 2 = fmo-ball (ball in flight)
+  const CONF_BALL = 0.40; // Higher threshold — stationary ball should be clearly visible
+  const CONF_FMO  = 0.25; // Lower threshold  — motion blur reduces model confidence in flight
+
   let bestConf = 0;
-  let bestBox = null;
-  
-  // YOLOv8 output shape is [1, 4 + numClasses, 8400]
-  // Dimensions are row-major: [batch, features, anchors]
+  let bestBox  = null;
+
   for (let i = 0; i < numAnchors; i++) {
     let maxClassConf = 0;
     let classId = -1;
-    
-    // Find the class with the highest confidence for this anchor
+
     for (let c = 0; c < numClasses; c++) {
       const conf = data[(4 + c) * numAnchors + i];
-      if (conf > maxClassConf) {
-        maxClassConf = conf;
-        classId = c;
-      }
+      if (conf > maxClassConf) { maxClassConf = conf; classId = c; }
     }
-    
-    // We filter for confidence > 0.25
-    if (maxClassConf > 0.25 && maxClassConf > bestConf) {
+
+    // Never track the club head
+    if (classId === 1) continue;
+
+    const threshold = classId === 2 ? CONF_FMO : CONF_BALL;
+    if (maxClassConf > threshold && maxClassConf > bestConf) {
       bestConf = maxClassConf;
-      
-      // Box coordinates: center_x, center_y, width, height
-      const cx = data[0 * numAnchors + i];
-      const cy = data[1 * numAnchors + i];
-      const w = data[2 * numAnchors + i];
-      const h = data[3 * numAnchors + i];
-      
-      bestBox = { cx, cy, w, h, classId, conf: maxClassConf };
+      bestBox  = {
+        cx: data[0 * numAnchors + i],
+        cy: data[1 * numAnchors + i],
+        classId,
+        conf: maxClassConf,
+      };
     }
   }
-  
+
   if (!bestBox) return null;
-  
-  // Scale the bounding box coordinates back to the original video resolution
+
   const scaleX = origW / MODEL_DIM;
   const scaleY = origH / MODEL_DIM;
-  
-  return {
-    x: bestBox.cx * scaleX,
-    y: bestBox.cy * scaleY,
-    confidence: bestBox.conf,
-    classId: bestBox.classId
-  };
+  return { x: bestBox.cx * scaleX, y: bestBox.cy * scaleY, confidence: bestBox.conf, classId: bestBox.classId };
 };

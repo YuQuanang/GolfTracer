@@ -19,6 +19,8 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- ORT loaded as classic script so Vite never transforms its dynamic imports -->
+    <script src="/ort.wasm.min.js"></script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

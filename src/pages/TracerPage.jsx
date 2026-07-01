@@ -100,13 +100,29 @@ export default function TracerPage() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [tracerPoints, setTracerPoints] = useState([]);
   const [tracerSettings, setTracerSettings] = useState({
-    color: '#BF9B6F', width: 3, opacity: 0.85, style: 'solid',
+    color: '#BF9B6F', width: 10, opacity: 0.85, style: 'solid', speed: 1,
   });
   const [error, setError] = useState('');
   const [processingProgress, setProcessingProgress] = useState(0);
+  const [curvePoints, setCurvePoints] = useState(null);
+  const [editMode, setEditMode] = useState(true);
+  const [activeHandle, setActiveHandle] = useState(null);
 
   const videoRef = useRef(null);
-  const canvasRef = useRef(null);
+
+  React.useEffect(() => {
+    if (activeStep === 2 && !curvePoints) {
+      const videoEl = videoRef.current?.getVideoElement?.();
+      const w = videoEl?.videoWidth || 600;
+      const h = videoEl?.videoHeight || 800;
+      setCurvePoints({
+        start:   { x: w * 0.35, y: h * 0.75 },
+        apex:    { x: w * 0.50, y: h * 0.25 },
+        landing: { x: w * 0.65, y: h * 0.68 },
+      });
+      setEditMode(false);
+    }
+  }, [activeStep, curvePoints]);
 
   const handleFileUpload = (file) => {
     if (!file) return;
@@ -128,7 +144,7 @@ export default function TracerPage() {
 
     try {
       const { loadModel, preprocess, postprocess } = await import('../utils/yoloUtils.js');
-      const session = await loadModel('/golf-vfa.onnx');
+      const session = await loadModel('/golf_tracker.onnx');
       const video = videoRef.current?.getVideoElement();
       if (!video) throw new Error('Video element not found');
 
@@ -157,6 +173,21 @@ export default function TracerPage() {
       }
 
       setTracerPoints(points);
+      // Derive the three Bézier control points from YOLO detections or set defaults
+      const videoEl = videoRef.current?.getVideoElement?.();
+      const w = videoEl?.videoWidth || 600;
+      const h = videoEl?.videoHeight || 800;
+      if (points.length >= 2) {
+        const apex = points.reduce((min, p) => p.y < min.y ? p : min, points[0]);
+        setCurvePoints({ start: points[0], apex, landing: points[points.length - 1] });
+      } else {
+        setCurvePoints({
+          start:   { x: w * 0.35, y: h * 0.75 },
+          apex:    { x: w * 0.50, y: h * 0.25 },
+          landing: { x: w * 0.65, y: h * 0.68 },
+        });
+      }
+      setEditMode(true);
       setIsProcessing(false);
       setActiveStep(2);
       video.currentTime = 0;
@@ -173,8 +204,32 @@ export default function TracerPage() {
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setVideoUrl('');
     setTracerPoints([]);
+    setCurvePoints(null);
+    setEditMode(true);
+    setActiveHandle(null);
     setError('');
     setProcessingProgress(0);
+  };
+
+  const handleCurvePointChange = (key, x, y) => {
+    setCurvePoints(prev => prev ? { ...prev, [key]: { ...prev[key], x, y } } : prev);
+  };
+
+  const handleManualSetup = () => {
+    const video = videoRef.current?.getVideoElement();
+    const w = video?.videoWidth || 600;
+    const h = video?.videoHeight || 800;
+    const curTime = video?.currentTime || 0;
+
+    setCurvePoints({
+      start:   { x: w * 0.35, y: h * 0.75 },
+      apex:    { x: w * 0.50, y: h * 0.25 },
+      landing: { x: w * 0.65, y: h * 0.68 },
+    });
+    setTracerSettings(s => ({ ...s, startTime: curTime }));
+    setEditMode(true);
+    setActiveStep(2);
+    toast.success('Manual setup mode ready! Drag the 3 points on the video.');
   };
 
   const getContent = (step) => {
@@ -184,60 +239,110 @@ export default function TracerPage() {
 
       case 1:
         return (
-          <div style={{ textAlign: 'center' }}>
+          <div style={{ maxWidth: 840, margin: '0 auto' }}>
             {videoUrl && (
-              <div style={{ marginBottom: '2rem' }}>
+              <div className="studio-card" style={{ marginBottom: '2rem', padding: '0.75rem', overflow: 'hidden' }}>
                 <VideoPlayer videoUrl={videoUrl} ref={videoRef} />
               </div>
             )}
             {isProcessing ? (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.25rem' }}>
+              <div className="studio-card" style={{ padding: '3rem 2rem', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.5rem' }}>
                 <ProgressRing pct={processingProgress} />
                 <div>
-                  <p style={{ fontFamily: "'Cormorant Garamond', serif", fontStyle: 'italic', fontSize: '1.4rem', color: 'var(--cream)', marginBottom: '0.25rem' }}>
-                    Analysing ball flight…
-                  </p>
-                  <p style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: '0.82rem', color: 'var(--mist)' }}>
-                    YOLOv8 is tracing every frame. This may take a few minutes.
+                  <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontStyle: 'italic', fontSize: '1.8rem', color: 'var(--cream)', marginBottom: '0.35rem' }}>
+                    Neural Network Tracing Ball Flight…
+                  </h3>
+                  <p style={{ fontFamily: "'Plus Jakarta Sans', sans-serif", fontSize: '0.88rem', color: 'var(--mist)', maxWidth: 420, margin: '0 auto' }}>
+                    Our AI model is scanning frame-by-frame to track initial velocity, trajectory arc, and apex height.
                   </p>
                 </div>
-                <div style={{ width: '100%', maxWidth: 360, height: 2, background: 'var(--ink-4)', borderRadius: 1, overflow: 'hidden' }}>
+                <div style={{ width: '100%', maxWidth: 400, height: 4, background: 'var(--ink-4)', borderRadius: 2, overflow: 'hidden' }}>
                   <div style={{
                     height: '100%', width: `${processingProgress}%`,
-                    background: 'linear-gradient(90deg, var(--bronze-dk), var(--bronze))',
+                    background: 'linear-gradient(90deg, var(--bronze-dk), var(--bronze), var(--gold))',
                     transition: 'width 300ms ease',
                   }} />
                 </div>
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
                 {/* Trial warning if last use */}
                 {!isPro && usesLeft === 1 && (
                   <div style={{
-                    padding: '0.6rem 1.25rem',
-                    background: 'rgba(160,55,42,0.1)',
-                    border: '1px solid rgba(160,55,42,0.3)',
+                    padding: '0.85rem 1.25rem',
+                    background: 'rgba(160,55,42,0.12)',
+                    border: '1px solid rgba(160,55,42,0.35)',
                     borderRadius: 'var(--r-sm)',
                     fontFamily: "'Plus Jakarta Sans', sans-serif",
-                    fontSize: '0.8rem', color: '#C0796C',
-                    marginBottom: '0.5rem',
+                    fontSize: '0.85rem', color: '#E08E7E',
+                    textAlign: 'center'
                   }}>
-                    ⚠ This is your last free analysis. <Link to="/pricing" style={{ color: 'inherit', textDecoration: 'underline' }}>Upgrade</Link> to continue after.
+                    ⚠ This is your last free AI analysis. <Link to="/pricing" style={{ color: 'inherit', textDecoration: 'underline', fontWeight: 600 }}>Upgrade to Pro</Link> for unlimited AI tracking.
                   </div>
                 )}
-                <button
-                  id="process-btn"
-                  className="btn btn-primary"
-                  onClick={processVideo}
-                  disabled={!isPro && usesLeft === 0}
-                  style={{ fontSize: '0.95rem', padding: '0.8rem 2rem', opacity: (!isPro && usesLeft === 0) ? 0.5 : 1 }}
-                >
-                  {(!isPro && usesLeft === 0) ? 'No analyses remaining' : 'Process & Trace Ball'}
-                </button>
+
+                <div style={{ textAlign: 'center', marginBottom: '0.5rem' }}>
+                  <p className="t-label" style={{ marginBottom: '0.2rem' }}>Select Workflow</p>
+                  <h3 style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: '1.6rem', fontStyle: 'italic', color: 'var(--cream)', margin: 0 }}>
+                    Choose Your Tracing Method
+                  </h3>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.25rem' }}>
+                  {/* Option 1: AI Auto Trace */}
+                  <div className="studio-card" style={{ padding: '1.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                    <div>
+                      <div style={{ width: 48, height: 48, borderRadius: 12, background: 'rgba(191,155,111,0.15)', border: '1px solid rgba(191,155,111,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.5rem', marginBottom: '1.25rem' }}>
+                        ⚡
+                      </div>
+                      <h4 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.3rem', color: 'var(--cream)', fontStyle: 'italic', marginBottom: '0.5rem' }}>
+                        Automated AI Neural Trace
+                      </h4>
+                      <p style={{ fontFamily: 'var(--font-sans)', fontSize: '0.82rem', color: 'var(--mist)', lineHeight: 1.6, marginBottom: '1.75rem' }}>
+                        Let our custom YOLOv8 model inspect frame velocity and plot your Start, Apex, and Landing trajectory curves automatically.
+                      </p>
+                    </div>
+                    <button
+                      id="process-btn"
+                      className="btn btn-primary"
+                      onClick={processVideo}
+                      disabled={!isPro && usesLeft === 0}
+                      style={{ width: '100%', padding: '0.85rem', fontSize: '0.95rem', boxShadow: 'var(--shadow-bronze)', opacity: (!isPro && usesLeft === 0) ? 0.5 : 1 }}
+                    >
+                      {(!isPro && usesLeft === 0) ? 'No AI Analyses Remaining' : '⚡ Launch AI Auto-Trace'}
+                    </button>
+                  </div>
+
+                  {/* Option 2: Manual Studio Setup */}
+                  <div className="studio-card" style={{ padding: '1.75rem', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                    <div>
+                      <div style={{ width: 48, height: 48, borderRadius: 12, background: 'var(--ink-3)', border: '1px solid var(--ink-4)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.5rem', marginBottom: '1.25rem' }}>
+                        ✎
+                      </div>
+                      <h4 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.3rem', color: 'var(--cream)', fontStyle: 'italic', marginBottom: '0.5rem' }}>
+                        Precision Manual Setup
+                      </h4>
+                      <p style={{ fontFamily: 'var(--font-sans)', fontSize: '0.82rem', color: 'var(--mist)', lineHeight: 1.6, marginBottom: '1.75rem' }}>
+                        Skip processing time and dive straight into our visual editor to place custom Tee, Apex, and Landing anchors directly on the screen.
+                      </p>
+                    </div>
+                    <button
+                      id="manual-setup-btn"
+                      className="btn btn-bronze"
+                      onClick={handleManualSetup}
+                      style={{ width: '100%', padding: '0.85rem', fontSize: '0.95rem' }}
+                    >
+                      ✎ Enter Manual Studio →
+                    </button>
+                  </div>
+                </div>
+
                 {!isPro && usesLeft === 0 && (
-                  <Link to="/pricing" className="btn btn-bronze" style={{ fontSize: '0.85rem' }}>
-                    View Plans
-                  </Link>
+                  <div style={{ textAlign: 'center', marginTop: '1rem' }}>
+                    <Link to="/pricing" className="btn btn-bronze" style={{ fontSize: '0.88rem', padding: '0.7rem 1.75rem' }}>
+                      View Pro Unlimited Plans →
+                    </Link>
+                  </div>
                 )}
               </div>
             )}
@@ -246,28 +351,54 @@ export default function TracerPage() {
 
       case 2:
         return (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: '1.5rem' }}>
-            <div>
-              <div style={{ marginBottom: '1.5rem' }}>
-                <VideoPlayer videoUrl={videoUrl} tracerPoints={tracerPoints} tracerSettings={tracerSettings} ref={videoRef} />
+          <div className="tracer-editor-layout">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <div className="studio-card" style={{ padding: '0.75rem', overflow: 'hidden' }}>
+                <VideoPlayer
+                  videoUrl={videoUrl}
+                  curvePoints={curvePoints}
+                  tracerSettings={tracerSettings}
+                  editMode={editMode}
+                  activeHandle={activeHandle}
+                  onSelectHandle={(k) => setActiveHandle(activeHandle === k ? null : k)}
+                  onCurvePointChange={handleCurvePointChange}
+                  ref={videoRef}
+                />
               </div>
               <TracerEditor
-                videoRef={videoRef} canvasRef={canvasRef}
-                tracerPoints={tracerPoints}
-                updateTracerPoint={(i, p) => { const u = [...tracerPoints]; u[i] = { ...u[i], ...p }; setTracerPoints(u); }}
-                addTracerPoint={(p) => setTracerPoints([...tracerPoints, p])}
-                removeTracerPoint={(i) => setTracerPoints(tracerPoints.filter((_, j) => j !== i))}
+                curvePoints={curvePoints}
+                editMode={editMode}
+                setEditMode={setEditMode}
+                activeHandle={activeHandle}
+                onSelectHandle={(k) => setActiveHandle(activeHandle === k ? null : k)}
               />
-              <div style={{ marginTop: '1.5rem', display: 'flex', justifyContent: 'center' }}>
-                <button className="btn btn-primary" onClick={() => setActiveStep(3)} style={{ fontSize: '0.9rem' }}>
-                  Export Video →
+              <div style={{
+                padding: '1.25rem',
+                background: 'rgba(191,155,111,0.06)',
+                border: '1px solid rgba(191,155,111,0.25)',
+                borderRadius: 'var(--r-md)',
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                flexWrap: 'wrap', gap: '1rem'
+              }}>
+                <div>
+                  <h4 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.15rem', color: 'var(--cream)', margin: 0, fontStyle: 'italic' }}>
+                    Ready to render your tracer?
+                  </h4>
+                  <p style={{ fontFamily: 'var(--font-sans)', fontSize: '0.78rem', color: 'var(--mist)', margin: 0 }}>
+                    Proceed to export high-definition 60 FPS video with custom branding.
+                  </p>
+                </div>
+                <button className="btn btn-primary" onClick={() => setActiveStep(3)} style={{ fontSize: '0.92rem', padding: '0.75rem 1.6rem', boxShadow: 'var(--shadow-bronze)' }}>
+                  Proceed to Export →
                 </button>
               </div>
             </div>
-            <TracerControls tracerSettings={tracerSettings} onSettingChange={(k, v) => setTracerSettings(s => ({ ...s, [k]: v }))} />
-            <style>{`@media (max-width: 900px) {
-              /* stack on mobile */
-            }`}</style>
+            <TracerControls
+              tracerSettings={tracerSettings}
+              onSettingChange={(k, v) => setTracerSettings(s => ({ ...s, [k]: v }))}
+              videoRef={videoRef}
+              onActivateEdit={() => setEditMode(true)}
+            />
           </div>
         );
 

@@ -1,304 +1,403 @@
-import React, { forwardRef, useState, useEffect, useImperativeHandle } from 'react';
-import { Box, IconButton, Slider, Paper, Typography } from '@mui/material';
-import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import PauseIcon from '@mui/icons-material/Pause';
-import VolumeUpIcon from '@mui/icons-material/VolumeUp';
-import VolumeOffIcon from '@mui/icons-material/VolumeOff';
-import FullscreenIcon from '@mui/icons-material/Fullscreen';
+import React, { forwardRef, useState, useEffect, useRef, useImperativeHandle } from 'react';
+import { simulateTrajectory, getTrajectoryPointAtTime, mapPhysicsTimeToScreenProgress } from '../../utils/golfPhysicsEngine';
 
-const VideoPlayer = forwardRef((props, ref) => {
-  const { videoUrl, tracerPoints = [], tracerSettings = {} } = props;
+/* ── colours matching the site theme ─────────────────────── */
+const HANDLE_COLORS = { start: '#00E676', apex: '#FFD600', landing: '#FF5252' };
+
+/* ── helpers ──────────────────────────────────────────────── */
+const fmt = (s) =>
+  `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+/** Evaluate quadratic Bézier at parameter t */
+const bezierPt = (p0, p1, p2, t) => {
+  const m = 1 - t;
+  return { x: m * m * p0.x + 2 * m * t * p1.x + t * t * p2.x,
+           y: m * m * p0.y + 2 * m * t * p1.y + t * t * p2.y };
+};
+
+/** Draw a partial quadratic Bézier from tStart to tEnd (80 segments) */
+const drawBezierSegment = (ctx, p0, p1, p2, tStart, tEnd) => {
+  const steps = 80;
+  ctx.beginPath();
+  for (let i = 0; i <= steps; i++) {
+    const t = tStart + (tEnd - tStart) * (i / steps);
+    const { x, y } = bezierPt(p0, p1, p2, t);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+};
+
+/** Draw Bézier curve sampled according to RK4 kinematic physics velocity distribution */
+const drawPhysicsSegment = (ctx, p0, p1, p2, uStart, uEnd, physicsTrajectory, clubKey = 'DRIVER') => {
+  if (!physicsTrajectory || physicsTrajectory.length === 0) {
+    drawBezierSegment(ctx, p0, p1, p2, uStart, uEnd);
+    return;
+  }
+  const steps = 150;
+  const T_max = physicsTrajectory[physicsTrajectory.length - 1].t || 1;
+
+  // Calculate maximum lateral curvature (z) for Draw/Fade shaping
+  let maxZ = 0.01;
+  for (const p of physicsTrajectory) {
+    if (Math.abs(p.z) > maxZ) maxZ = Math.abs(p.z);
+  }
+  const span = Math.hypot(p2.x - p0.x, p2.y - p0.y) || 300;
+  const maxLateralPx = Math.min(75, span * 0.22); // up to 75px lateral bow on screen
+
+  ctx.beginPath();
+  for (let i = 0; i <= steps; i++) {
+    const screenProgress = uStart + (uEnd - uStart) * (i / steps);
+    const { x, y } = bezierPt(p0, p1, p2, screenProgress);
+
+    // Apply lateral Draw/Fade displacement
+    let lateralOffset = 0;
+    if (maxZ > 0.5) {
+      const t_query = screenProgress * T_max;
+      const pt = getTrajectoryPointAtTime(physicsTrajectory, t_query, 1.0);
+      if (pt) {
+        lateralOffset = (pt.z / maxZ) * maxLateralPx;
+      }
+    }
+
+    const finalX = x + lateralOffset;
+    i === 0 ? ctx.moveTo(finalX, y) : ctx.lineTo(finalX, y);
+  }
+  ctx.stroke();
+};
+
+/** Draw a circular handle without text label, highlighting when active */
+const drawHandle = (ctx, x, y, key, isActive) => {
+  const color = HANDLE_COLORS[key];
+  const r = isActive ? 13 : 10;
+
+  ctx.save();
+  ctx.globalAlpha = 1;
+
+  // Active pulsing target ring when focused
+  if (isActive) {
+    ctx.beginPath();
+    ctx.arc(x, y, r + 12, 0, Math.PI * 2);
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 4]);
+    ctx.stroke();
+  }
+
+  // glow ring
+  ctx.beginPath();
+  ctx.arc(x, y, r + 6, 0, Math.PI * 2);
+  ctx.fillStyle = color + (isActive ? '60' : '30');
+  ctx.fill();
+
+  // filled circle
+  ctx.shadowColor = color;
+  ctx.shadowBlur = isActive ? 20 : 14;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+
+  // white border
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = '#FFFFFF';
+  ctx.lineWidth = isActive ? 2.5 : 1.5;
+  ctx.stroke();
+
+  ctx.restore();
+};
+
+/* ── component ────────────────────────────────────────────── */
+const VideoPlayer = forwardRef(({ videoUrl, curvePoints, tracerSettings = {}, editMode = false, activeHandle, onSelectHandle, onCurvePointChange }, ref) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [volume, setVolume] = useState(0.5);
   const [isMuted, setIsMuted] = useState(true);
-  const [showControls, setShowControls] = useState(true);
-  
-  const videoRef = React.useRef(null);
-  const canvasRef = React.useRef(null);
-  const animationFrameRef = React.useRef(null);
-  // Expose video element methods to parent component
+  const [volume, setVolume] = useState(0.5);
+
+  const videoRef   = useRef(null);
+  const canvasRef  = useRef(null);
+  const dragging   = useRef(null); // 'start' | 'apex' | 'landing' | null
+  const drawRef    = useRef(null); // always-fresh drawTracer reference
+
+  /* ── imperative handle ──────────────────────────────────── */
   useImperativeHandle(ref, () => ({
-    play: () => {
-      videoRef.current.play();
-      setIsPlaying(true);
-    },
-    pause: () => {
-      videoRef.current.pause();
-      setIsPlaying(false);
-    },
+    play:           () => { videoRef.current.play();  setIsPlaying(true);  },
+    pause:          () => { videoRef.current.pause(); setIsPlaying(false); },
     getCurrentTime: () => videoRef.current.currentTime,
-    getDuration: () => videoRef.current.duration,
-    seekTo: (time) => {
-      videoRef.current.currentTime = time;
-    },
+    getDuration:    () => videoRef.current.duration,
+    seekTo:    (t) => { videoRef.current.currentTime = t; },
     getVideoElement: () => videoRef.current,
     getCanvasElement: () => canvasRef.current,
   }));
-  
-  // Handle video events
+
+  /* ── video event wiring (once) ──────────────────────────── */
   useEffect(() => {
-    const videoElement = videoRef.current;
-    
-    const handleTimeUpdate = () => {
-      setCurrentTime(videoElement.currentTime);
-      drawTracer();
-    };
-    
-    const handleLoadedMetadata = () => {
-      setDuration(videoElement.duration);
-    };
-    
-    const handleEnded = () => {
-      setIsPlaying(false);
-    };
-    
-    videoElement.addEventListener('timeupdate', handleTimeUpdate);
-    videoElement.addEventListener('loadedmetadata', handleLoadedMetadata);
-    videoElement.addEventListener('ended', handleEnded);
-    
+    const v = videoRef.current;
+    const onTime  = () => { setCurrentTime(v.currentTime); drawRef.current?.(); };
+    const onMeta  = () => setDuration(v.duration);
+    const onEnded = () => setIsPlaying(false);
+    v.addEventListener('timeupdate',     onTime);
+    v.addEventListener('loadedmetadata', onMeta);
+    v.addEventListener('ended',          onEnded);
     return () => {
-      videoElement.removeEventListener('timeupdate', handleTimeUpdate);
-      videoElement.removeEventListener('loadedmetadata', handleLoadedMetadata);
-      videoElement.removeEventListener('ended', handleEnded);
-      
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
+      v.removeEventListener('timeupdate',     onTime);
+      v.removeEventListener('loadedmetadata', onMeta);
+      v.removeEventListener('ended',          onEnded);
     };
   }, []);
-  
-  // Update tracer when points or settings change
+
+  /* ── 60 FPS smooth animation loop during playback ─────────── */
   useEffect(() => {
-    drawTracer();
-  }, [tracerPoints, tracerSettings]);
-  
-  // Draw tracer on canvas
-  const drawTracer = () => {
-    if (!canvasRef.current || !videoRef.current || tracerPoints.length === 0) return;
-    
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    const video = videoRef.current;
-    
-    // Set canvas dimensions to match video
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    
-    // Clear canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    // Get current frame
-    const currentFrame = Math.floor(video.currentTime * 30); // Assuming 30fps
-    
-    // Set tracer style
-    const color = tracerSettings.color || '#ff0000';
-    const width = tracerSettings.width || 3;
-    const opacity = tracerSettings.opacity || 0.8;
-    const style = tracerSettings.style || 'solid';
-    
-    ctx.strokeStyle = color;
-    ctx.lineWidth = width;
-    ctx.globalAlpha = opacity;
-    
-    if (style === 'dashed') {
-      ctx.setLineDash([5, 3]);
-    } else {
-      ctx.setLineDash([]);
-    }
-    
-    // Draw tracer path up to current frame
-    const visiblePoints = tracerPoints.filter(point => point.frame <= currentFrame);
-    
-    if (visiblePoints.length > 1) {
-      ctx.beginPath();
-      ctx.moveTo(visiblePoints[0].x, visiblePoints[0].y);
-      
-      for (let i = 1; i < visiblePoints.length; i++) {
-        ctx.lineTo(visiblePoints[i].x, visiblePoints[i].y);
+    let animId;
+    const renderLoop = () => {
+      if (videoRef.current && !videoRef.current.paused) {
+        setCurrentTime(videoRef.current.currentTime);
+        drawRef.current?.();
       }
-      
-      ctx.stroke();
-      
-      // Draw points
-      visiblePoints.forEach((point, index) => {
-        ctx.beginPath();
-        ctx.arc(point.x, point.y, width + 1, 0, Math.PI * 2);
-        ctx.fillStyle = color;
-        ctx.fill();
-      });
-    }
-  };
-  
-  // Playback controls
-  const togglePlay = () => {
+      animId = requestAnimationFrame(renderLoop);
+    };
     if (isPlaying) {
-      videoRef.current.pause();
-    } else {
-      videoRef.current.play();
+      animId = requestAnimationFrame(renderLoop);
     }
-    setIsPlaying(!isPlaying);
+    return () => {
+      if (animId) cancelAnimationFrame(animId);
+    };
+  }, [isPlaying]);
+
+  /* ── draw whenever props change ─────────────────────────── */
+  useEffect(() => { drawRef.current?.(); }, [curvePoints, tracerSettings, editMode]);
+
+  /* ── drawTracer — re-created each render, stored in ref ── */
+  const drawTracer = () => {
+    const canvas = canvasRef.current;
+    const video  = videoRef.current;
+    if (!canvas || !video || !video.videoWidth) return;
+
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (!curvePoints) return;
+    const { start, apex, landing } = curvePoints;
+    if (!start || !apex || !landing) return;
+
+    const color   = tracerSettings.color   || '#BF9B6F';
+    const width   = tracerSettings.width   || 3;
+    const opacity = tracerSettings.opacity || 0.85;
+    const style   = tracerSettings.style   || 'solid';
+
+    ctx.lineWidth  = width;
+    ctx.lineCap    = 'round';
+    ctx.lineJoin   = 'round';
+    ctx.strokeStyle = color;
+
+    if      (style === 'dashed') ctx.setLineDash([width * 3, width * 2]);
+    else if (style === 'dotted') ctx.setLineDash([width,     width * 3]);
+    else                          ctx.setLineDash([]);
+
+    const curTime = video.currentTime;
+
+    // If start time hasn't been explicitly confirmed by pressing "Set to Current Frame",
+    // do not draw ANY tracer lines, faint outlines, or handles whether playing or paused!
+    if (!tracerSettings.isStartTimeConfirmed) {
+      return;
+    }
+
+    // Determine start time (in seconds)
+    const startTime = tracerSettings.startTime !== undefined
+      ? tracerSettings.startTime
+      : (start.frame !== undefined ? start.frame / 30 : 0);
+
+    // When playing back or before start/impact time, hide revealed tracer completely
+    if (curTime < startTime && !video.paused) return;
+    if (!editMode && curTime < startTime) return;
+
+    // Generate kinematic physics trajectory based on selected club & aerodynamic shape
+    const clubKey = tracerSettings.club || 'DRIVER';
+    const shapeKey = tracerSettings.shotShape || 'STRAIGHT';
+    const physicsTrajectory = simulateTrajectory(clubKey, shapeKey);
+
+    // Progress parameter u mapped with perspective launch acceleration and apex synchronization
+    const speed = tracerSettings.speed || 1;
+    const elapsed = Math.max(0, curTime - startTime);
+    const progressFraction = mapPhysicsTimeToScreenProgress(physicsTrajectory, elapsed * speed, clubKey);
+
+    // Treat apex as ON-CURVE point at t=0.5 → back-compute the Bézier control point P1
+    const P1 = {
+      x: 2 * apex.x - 0.5 * (start.x + landing.x),
+      y: 2 * apex.y - 0.5 * (start.y + landing.y),
+    };
+
+    // Ghost (full path, faint) — ONLY visible when actively editing
+    if (editMode) {
+      ctx.globalAlpha = opacity * 0.18;
+      ctx.shadowBlur  = 0;
+      drawPhysicsSegment(ctx, start, P1, landing, 0, 1, physicsTrajectory, clubKey);
+    }
+
+    // Revealed portion with physics velocity mapping
+    if (progressFraction > 0) {
+      ctx.globalAlpha  = opacity;
+      ctx.shadowColor  = color;
+      ctx.shadowBlur   = width * 2.5;
+      drawPhysicsSegment(ctx, start, P1, landing, 0, progressFraction, physicsTrajectory, clubKey);
+    }
+
+    // Edit handles
+    if (editMode) {
+      ctx.setLineDash([]);
+      ctx.shadowBlur = 0;
+
+      // Control polygon (dashed lines: start → apex → landing)
+      ctx.globalAlpha  = 0.3;
+      ctx.strokeStyle  = '#FFFFFF';
+      ctx.lineWidth    = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(start.x, start.y);
+      ctx.lineTo(apex.x,  apex.y);
+      ctx.lineTo(landing.x, landing.y);
+      ctx.stroke();
+
+      // Handles
+      drawHandle(ctx, start.x,   start.y,   'start',   activeHandle === 'start');
+      drawHandle(ctx, apex.x,    apex.y,    'apex',    activeHandle === 'apex');
+      drawHandle(ctx, landing.x, landing.y, 'landing', activeHandle === 'landing');
+    }
   };
-  
-  const handleSeek = (_, newValue) => {
-    videoRef.current.currentTime = newValue;
-    setCurrentTime(newValue);
+
+  // Keep the ref current every render
+  drawRef.current = drawTracer;
+
+  /* ── canvas coordinate transform ───────────────────────── */
+  const canvasCoords = (e) => {
+    const canvas = canvasRef.current;
+    const rect   = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left)  * (canvas.width  / rect.width),
+      y: (e.clientY - rect.top)   * (canvas.height / rect.height),
+    };
   };
-  
-  const handleVolumeChange = (_, newValue) => {
-    setVolume(newValue);
-    videoRef.current.volume = newValue;
-    setIsMuted(newValue === 0);
+
+  const hitHandle = (x, y) => {
+    if (!curvePoints) return null;
+    const HIT = 20;
+    for (const key of ['start', 'apex', 'landing']) {
+      const p = curvePoints[key];
+      if (p && Math.hypot(x - p.x, y - p.y) < HIT) return key;
+    }
+    return null;
   };
-  
+
+  /* ── drag handlers ──────────────────────────────────────── */
+  const onMouseDown = (e) => {
+    if (!editMode) return;
+    const { x, y } = canvasCoords(e);
+    const hit = hitHandle(x, y);
+    if (hit) {
+      dragging.current = hit;
+      onSelectHandle?.(hit);
+    } else if (activeHandle) {
+      onCurvePointChange?.(activeHandle, x, y);
+      dragging.current = activeHandle;
+    }
+  };
+  const onMouseMove = (e) => {
+    if (!editMode || !dragging.current) return;
+    const { x, y } = canvasCoords(e);
+    onCurvePointChange?.(dragging.current, x, y);
+  };
+  const onMouseUp = () => { dragging.current = null; };
+
+  /* ── playback controls ──────────────────────────────────── */
+  const togglePlay = () => {
+    if (isPlaying) { videoRef.current.pause(); setIsPlaying(false); }
+    else            { videoRef.current.play();  setIsPlaying(true);  }
+  };
+  const handleSeek = (e) => {
+    const t = Number(e.target.value);
+    videoRef.current.currentTime = t;
+    setCurrentTime(t);
+  };
   const toggleMute = () => {
-    if (isMuted) {
-      videoRef.current.volume = volume || 0.5;
-      setIsMuted(false);
-    } else {
-      videoRef.current.volume = 0;
-      setIsMuted(true);
-    }
+    if (isMuted) { videoRef.current.volume = volume || 0.5; setIsMuted(false); }
+    else          { videoRef.current.volume = 0;             setIsMuted(true);  }
   };
-  
   const toggleFullscreen = () => {
-    const container = document.getElementById('video-container');
-    if (!document.fullscreenElement) {
-      container.requestFullscreen().catch(err => {
-        console.error(`Error attempting to enable full-screen mode: ${err.message}`);
-      });
-    } else {
-      document.exitFullscreen();
-    }
+    const el = document.getElementById('video-container');
+    if (!document.fullscreenElement) el?.requestFullscreen().catch(() => {});
+    else document.exitFullscreen();
   };
-  
-  // Format time display
-  const formatTime = (time) => {
-    const minutes = Math.floor(time / 60);
-    const seconds = Math.floor(time % 60);
-    return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
-  };
-  
+
+  /* ── render ─────────────────────────────────────────────── */
   return (
-    <Box id="video-container"
-      sx={{
-        position: 'relative',
-        width: '100%',
-        maxWidth: '800px',
-        margin: '0 auto',
-        borderRadius: 2,
-        overflow: 'hidden',
-        '&:hover .video-controls': {
-          opacity: 1,
-        },
-      }}
-      onMouseEnter={() => setShowControls(true)}
-      onMouseLeave={() => !isPlaying && setShowControls(true)}
+    <div
+      id="video-container"
+      style={{ position: 'relative', width: '100%', maxWidth: 560, margin: '0 auto',
+               borderRadius: 8, overflow: 'hidden', background: '#000' }}
     >
-      <Box sx={{ position: 'relative' }}>
+      <div style={{ position: 'relative' }}>
         <video
           ref={videoRef}
           src={videoUrl}
-          style={{
-            width: '100%',
-            display: 'block',
-            borderRadius: '8px',
-          }}
+          style={{ width: '100%', display: 'block' }}
           muted={isMuted}
           playsInline
         />
         <canvas
           ref={canvasRef}
           style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: '100%',
-            pointerEvents: 'none',
+            position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
+            pointerEvents: editMode ? 'auto' : 'none',
+            cursor:        editMode ? 'crosshair' : 'default',
           }}
+          onMouseDown={onMouseDown}
+          onMouseMove={onMouseMove}
+          onMouseUp={onMouseUp}
+          onMouseLeave={onMouseUp}
         />
-      </Box>
-      
-      <Box
-        className="video-controls"
-        sx={{
-          position: 'absolute',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.7)',
-          padding: '8px 16px',
-          display: 'flex',
-          flexDirection: 'column',
-          opacity: showControls ? 1 : 0,
-          transition: 'opacity 0.3s ease',
-        }}
-      >
-        <Slider
+      </div>
+
+      {/* Controls */}
+      <div style={{
+        position: 'absolute', bottom: 0, left: 0, right: 0,
+        background: 'linear-gradient(transparent, rgba(0,0,0,0.85))',
+        padding: '1.5rem 0.875rem 0.75rem',
+      }}>
+        {/* Seek bar */}
+        <input
+          type="range" min={0} max={duration || 100} step={0.033}
           value={currentTime}
-          max={duration || 100}
           onChange={handleSeek}
-          sx={{
-            color: 'primary.main',
-            height: 4,
-            '& .MuiSlider-thumb': {
-              width: 12,
-              height: 12,
-              transition: '0.3s cubic-bezier(.47,1.64,.41,.8)',
-              '&:hover, &.Mui-focusVisible': {
-                boxShadow: '0px 0px 0px 8px rgba(76, 175, 80, 0.16)',
-              },
-            },
-          }}
+          style={{ width: '100%', height: 3, marginBottom: '0.5rem',
+                   accentColor: '#BF9B6F', cursor: 'pointer', display: 'block' }}
         />
-        
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <Box sx={{ display: 'flex', alignItems: 'center' }}>
-            <IconButton onClick={togglePlay} size="small" sx={{ color: 'white' }}>
-              {isPlaying ? <PauseIcon /> : <PlayArrowIcon />}
-            </IconButton>
-            
-            <Box sx={{ display: 'flex', alignItems: 'center', ml: 1, width: 100 }}>
-              <IconButton onClick={toggleMute} size="small" sx={{ color: 'white' }}>
-                {isMuted ? <VolumeOffIcon /> : <VolumeUpIcon />}
-              </IconButton>
-              <Slider
-                value={isMuted ? 0 : volume}
-                onChange={handleVolumeChange}
-                min={0}
-                max={1}
-                step={0.1}
-                sx={{
-                  color: 'white',
-                  width: 60,
-                  ml: 1,
-                  '& .MuiSlider-track': {
-                    border: 'none',
-                  },
-                  '& .MuiSlider-thumb': {
-                    width: 10,
-                    height: 10,
-                    backgroundColor: '#fff',
-                  },
-                }}
-              />
-            </Box>
-            
-            <Typography variant="body2" sx={{ color: 'white', ml: 1 }}>
-              {formatTime(currentTime)} / {formatTime(duration)}
-            </Typography>
-          </Box>
-          
-          <Box sx={{ display: 'flex', alignItems: 'center' }}>
-            <IconButton onClick={toggleFullscreen} size="small" sx={{ color: 'white' }}>
-              <FullscreenIcon />
-            </IconButton>
-          </Box>
-        </Box>
-      </Box>
-    </Box>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <button id="vp-play" onClick={togglePlay}
+              style={{ background: 'none', border: 'none', color: '#F2EDE5',
+                       cursor: 'pointer', fontSize: '1rem', padding: '2px 6px', lineHeight: 1 }}>
+              {isPlaying ? '⏸' : '▶'}
+            </button>
+            <button id="vp-mute" onClick={toggleMute}
+              style={{ background: 'none', border: 'none', color: '#888',
+                       cursor: 'pointer', fontSize: '0.85rem', padding: '2px 4px', lineHeight: 1 }}>
+              {isMuted ? '🔇' : '🔊'}
+            </button>
+            <span style={{ fontFamily: "'Space Grotesk', monospace", fontSize: '0.68rem',
+                           color: '#888', letterSpacing: '0.06em' }}>
+              {fmt(currentTime)} / {fmt(duration)}
+            </span>
+          </div>
+          <button id="vp-fullscreen" onClick={toggleFullscreen}
+            style={{ background: 'none', border: 'none', color: '#666',
+                     cursor: 'pointer', fontSize: '0.9rem', lineHeight: 1 }}>
+            ⛶
+          </button>
+        </div>
+      </div>
+    </div>
   );
 });
 

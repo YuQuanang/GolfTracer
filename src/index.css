@@ -319,3 +319,29 @@ body::before {
 
 /* ── Focus ── */
 :focus-visible { outline: 2px solid var(--bronze); outline-offset: 3px; border-radius: 2px; }
+
+/* ── Tracer Studio Layout (Responsive) ── */
+.tracer-editor-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 350px;
+  gap: 2rem;
+  align-items: start;
+}
+
+@media (max-width: 992px) {
+  .tracer-editor-layout {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+}
+
+.studio-card {
+  background: var(--ink-2);
+  border: 1px solid var(--ink-4);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-md);
+  transition: border-color 200ms ease, box-shadow 200ms ease;
+}
+.studio-card:hover {
+  border-color: rgba(191,155,111,0.25);
+}
